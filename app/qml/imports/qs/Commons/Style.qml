@@ -1,5 +1,7 @@
 pragma Singleton
 import QtQuick
+import Quickshell
+import Quickshell.Io
 import qs.Commons as Commons
 
 QtObject {
@@ -16,18 +18,20 @@ QtObject {
   }
 
   readonly property FontMetrics metrics: FontMetrics { font: Qt.application.font }
-  // Text follows the platform UI font in the standalone app. Only the private
+  // Invariant: Text follows the platform UI font in the standalone app. Only the private
   // use icon range is bundled; regular labels retain native platform metrics.
   readonly property real baseFontSize: shellTheme.font.baseSize
   readonly property real fontScale: Math.max(1 / 12, baseFontSize / 12)
   readonly property real spacingScale: shellTheme.spacing.scale
     * (shellTheme.spacing.scaleWithFont ? fontScale : 1)
-  readonly property real cornerRadius: 0
+  // Invariant: Corners follow Hyprland's decoration:rounding, as the shell's Style does, so the
+  // app keeps the rounded look it had as a plugin. Without Hyprland they stay square.
+  property int cornerRadius: 0
   readonly property real normalBorderWidth: controlNumber("normal-border-width", 1)
   readonly property real hoverBorderWidth: controlNumber("hover-cursor-border-width", normalBorderWidth)
   readonly property real selectedBorderWidth: controlNumber("selected-border-width", 0)
   readonly property real focusBorderWidth: controlNumber("focus-border-width", hoverBorderWidth)
-  // Match the shell's hover intent threshold. Keeping this here gives every
+  // Invariant: Match the shell's hover intent threshold. Keeping this here gives every
   // standalone tooltip the same pause, including controls that use the
   // platform style directly.
   readonly property int tooltipDelay: 400
@@ -78,7 +82,40 @@ QtObject {
     popupPadding: spacingToken("popup-padding", 14)
   })
 
-  function applyShellTheme(value) { shellTheme = value }
+  function applyShellTheme(value) {
+    shellTheme = value
+    roundingRefresh.restart()
+  }
+  function applyRoundingJson(raw) {
+    try {
+      var rounding = Number(JSON.parse(raw || "{}").int)
+      if (isFinite(rounding) && rounding >= 0) cornerRadius = Math.round(rounding)
+    } catch (error) {
+      // Invariant: An unreadable answer keeps the previous radius.
+    }
+  }
+  function refreshRounding() {
+    if (Quickshell.env("HYPRLAND_INSTANCE_SIGNATURE") === "" || roundingProcess.running) return
+    roundingProcess.running = true
+  }
+  // Invariant: A theme change reloads Hyprland after its files change, so the radius is read
+  // again a moment later rather than at once.
+  readonly property Timer roundingRefresh: Timer {
+    interval: 1000
+    onTriggered: root.refreshRounding()
+  }
+  readonly property Process roundingProcess: Process {
+    command: ["hyprctl", "-j", "getoption", "decoration:rounding"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.applyRoundingJson(text)
+    }
+  }
+  property Connections roundingHost: Connections {
+    target: Quickshell
+    function onNativeHostChanged() { root.refreshRounding() }
+  }
+  Component.onCompleted: refreshRounding()
   function fontToken(key, multiplier) {
     var value = shellTheme.font.overrides[key]
     return value === undefined ? Math.max(1, Math.round(baseFontSize * multiplier)) : value
@@ -104,16 +141,16 @@ QtObject {
   }
 
   function space(value) {
-    var n = Number(value) * spacingScale
-    return n <= 0 ? 0 : Math.max(1, Math.round(n))
+    var scaled = Number(value) * spacingScale
+    return scaled <= 0 ? 0 : Math.max(1, Math.round(scaled))
   }
   function withAlpha(color, alpha) { return Qt.rgba(color.r, color.g, color.b, alpha) }
   function mix(first, second, amount) {
-    var n = Math.max(0, Math.min(1, Number(amount)))
-    return Qt.rgba(first.r * (1 - n) + second.r * n,
-      first.g * (1 - n) + second.g * n,
-      first.b * (1 - n) + second.b * n,
-      first.a * (1 - n) + second.a * n)
+    var proportion = Math.max(0, Math.min(1, Number(amount)))
+    return Qt.rgba(first.r * (1 - proportion) + second.r * proportion,
+      first.g * (1 - proportion) + second.g * proportion,
+      first.b * (1 - proportion) + second.b * proportion,
+      first.a * (1 - proportion) + second.a * proportion)
   }
   function mutedColorFor(foreground, background) { return mix(foreground, background, 0.46) }
   function stateColor(key, foreground, accent, fallback) {

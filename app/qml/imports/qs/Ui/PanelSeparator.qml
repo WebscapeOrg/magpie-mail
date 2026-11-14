@@ -1,12 +1,15 @@
 import QtQuick
-import qs.Commons
 import qs.Commons as Commons
 
-Item {
+// Invariant: Matches the shell's PanelSeparator: a one-pixel rule in the text colour at 12%,
+// so the line under the top row stays faint whatever the theme's control colours are.
+Rectangle {
   property color foreground: Commons.Color.foreground
-  implicitHeight: Math.max(1, Style.normalBorderWidth)
-  Rectangle {
-    anchors.fill: parent
-    color: Style.normalBorderFor(parent.foreground, Commons.Color.accent)
-  }
+  property real strength: 0.12
+
+  width: parent ? parent.width : implicitWidth
+  implicitWidth: 100
+  implicitHeight: 1
+  height: 1
+  color: Qt.rgba(foreground.r, foreground.g, foreground.b, strength)
 }
