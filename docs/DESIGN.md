@@ -94,6 +94,15 @@ Equal edges and gaps are layout invariants. Verify their resolved bounds at repr
 
 A scrollbar belongs to the viewport that scrolls and sits on that region's outer edge. Text and row padding live inside the viewport; they must not inset the scrollbar into the content column. When content needs clearance from the scrollbar, reserve it deliberately inside the content rather than moving the scroll owner.
 
+### Shared top row with Magpie Calendar and Magpie To Do
+
+Magpie Mail's top row is the reference for its sibling desktop apps. They place their menu button, top row, header
+hairline and side margins where Mail does, and scale their spacing units by Mail's interface text size so the three
+stay aligned when that size changes. They read it from `display.interfaceSize` in Mail's `window.json`
+(`~/.config/omamail/window.json`). Treat that key as an interface: renaming or moving it, or changing what it means,
+needs a note to those apps first. The file is replaced atomically by `scripts/config-store.sh`, so a reader watches
+its folder, reacts only when that value changes, and keeps its last good value when the file is missing or unreadable.
+
 ## Sidebar
 
 The sidebar is a compound component with four roles:
