@@ -1,5 +1,7 @@
 pragma Singleton
 import QtQuick
+import Quickshell
+import Quickshell.Io
 import qs.Commons as Commons
 
 QtObject {
@@ -22,7 +24,9 @@ QtObject {
   readonly property real fontScale: Math.max(1 / 12, baseFontSize / 12)
   readonly property real spacingScale: shellTheme.spacing.scale
     * (shellTheme.spacing.scaleWithFont ? fontScale : 1)
-  readonly property real cornerRadius: 0
+  // Invariant: Corners follow Hyprland's decoration:rounding, as the shell's Style does, so the
+  // app keeps the rounded look it had as a plugin. Without Hyprland they stay square.
+  property int cornerRadius: 0
   readonly property real normalBorderWidth: controlNumber("normal-border-width", 1)
   readonly property real hoverBorderWidth: controlNumber("hover-cursor-border-width", normalBorderWidth)
   readonly property real selectedBorderWidth: controlNumber("selected-border-width", 0)
@@ -78,7 +82,40 @@ QtObject {
     popupPadding: spacingToken("popup-padding", 14)
   })
 
-  function applyShellTheme(value) { shellTheme = value }
+  function applyShellTheme(value) {
+    shellTheme = value
+    roundingRefresh.restart()
+  }
+  function applyRoundingJson(raw) {
+    try {
+      var rounding = Number(JSON.parse(raw || "{}").int)
+      if (isFinite(rounding) && rounding >= 0) cornerRadius = Math.round(rounding)
+    } catch (error) {
+      // Invariant: An unreadable answer keeps the previous radius.
+    }
+  }
+  function refreshRounding() {
+    if (Quickshell.env("HYPRLAND_INSTANCE_SIGNATURE") === "" || roundingProcess.running) return
+    roundingProcess.running = true
+  }
+  // Invariant: A theme change reloads Hyprland after its files change, so the radius is read
+  // again a moment later rather than at once.
+  readonly property Timer roundingRefresh: Timer {
+    interval: 1000
+    onTriggered: root.refreshRounding()
+  }
+  readonly property Process roundingProcess: Process {
+    command: ["hyprctl", "-j", "getoption", "decoration:rounding"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.applyRoundingJson(text)
+    }
+  }
+  property Connections roundingHost: Connections {
+    target: Quickshell
+    function onNativeHostChanged() { root.refreshRounding() }
+  }
+  Component.onCompleted: refreshRounding()
   function fontToken(key, multiplier) {
     var value = shellTheme.font.overrides[key]
     return value === undefined ? Math.max(1, Math.round(baseFontSize * multiplier)) : value

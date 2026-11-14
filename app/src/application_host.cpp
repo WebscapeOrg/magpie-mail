@@ -278,7 +278,7 @@ QString ApplicationHost::environment(const QString &name) const
     static const QSet<QString> allowed{
         QStringLiteral("HOME"), QStringLiteral("XDG_CONFIG_HOME"),
         QStringLiteral("XDG_CACHE_HOME"), QStringLiteral("XDG_DATA_HOME"),
-        QStringLiteral("OMAMAIL_BIN"),
+        QStringLiteral("OMAMAIL_BIN"), QStringLiteral("HYPRLAND_INSTANCE_SIGNATURE"),
         QStringLiteral("OMAMAIL_SMOKE_TEST")};
     if (!allowed.contains(name)) return {};
     return QString::fromLocal8Bit(qgetenv(name.toLocal8Bit().constData()));

@@ -361,6 +361,7 @@ void SettingsTest::environmentUsesFixedAllowlist()
     qputenv("OMAMAIL_BIN", "/synthetic/backend");
     qputenv("XDG_DATA_HOME", "/synthetic/data");
     qputenv("OMAMAIL_TEST_SECRET", "must-not-cross-qml-boundary");
+    qputenv("HYPRLAND_INSTANCE_SIGNATURE", "synthetic-instance");
     ApplicationHost host;
 #if defined(Q_OS_LINUX) || defined(Q_OS_MACOS)
     QCOMPARE(host.capabilities().value(QStringLiteral("mailto")).toBool(), true);
@@ -375,6 +376,8 @@ void SettingsTest::environmentUsesFixedAllowlist()
     QCOMPARE(host.environment(QStringLiteral("OMAMAIL_BIN")), QStringLiteral("/synthetic/backend"));
     QCOMPARE(host.environment(QStringLiteral("XDG_DATA_HOME")), QStringLiteral("/synthetic/data"));
     QCOMPARE(host.environment(QStringLiteral("OMAMAIL_TEST_SECRET")), QString());
+    // Invariant: The style reads Hyprland's rounding only when it can see Hyprland's instance.
+    QCOMPARE(host.environment(QStringLiteral("HYPRLAND_INSTANCE_SIGNATURE")), QStringLiteral("synthetic-instance"));
 
     qputenv("OMAMAIL_DISABLE_NOTIFICATIONS", "1");
     ApplicationHost quiet;

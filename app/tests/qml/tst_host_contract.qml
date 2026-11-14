@@ -647,6 +647,33 @@ TestCase {
     compare(dropdown.value, "one")
   }
 
+  function test_separator_is_a_faint_rule_in_the_text_colour() {
+    compare(separator.height, 1)
+    compare(separator.color.r, Commons.Color.foreground.r)
+    compare(separator.color.g, Commons.Color.foreground.g)
+    compare(separator.color.b, Commons.Color.foreground.b)
+    fuzzyCompare(separator.color.a, 0.12, 0.01)
+  }
+
+  function test_corner_radius_follows_hyprland_rounding() {
+    var original = Style.cornerRadius
+    Style.applyRoundingJson('{"option":"decoration:rounding","int":10,"set":true}')
+    compare(Style.cornerRadius, 10)
+    Style.applyRoundingJson("not json")
+    compare(Style.cornerRadius, 10)
+    Style.applyRoundingJson('{"int":-3}')
+    compare(Style.cornerRadius, 10)
+    Style.applyRoundingJson('{"int":0}')
+    compare(Style.cornerRadius, 0)
+    Style.cornerRadius = original
+  }
+
+  function test_corner_radius_is_not_read_without_hyprland() {
+    verify(!Style.roundingProcess.running)
+    Style.refreshRounding()
+    verify(!Style.roundingProcess.running)
+  }
+
   function test_shared_application_constructs_with_production_imports() {
     compare(sharedAppComponent.status, Component.Ready)
   }
