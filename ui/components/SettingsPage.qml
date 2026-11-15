@@ -5,6 +5,7 @@ import Quickshell.Io
 import qs.Commons
 import qs.Ui
 import "../message/Direction.js" as Direction
+import "../message/Message.js" as Message
 import "../settings/Appearance.js" as Appearance
 import "../message/Html.js" as Html
 
@@ -180,9 +181,17 @@ Column {
       importFailed = true
       return
     }
+    // Invariant: The engine refuses HTML over 256 K UTF-16 units, and a UTF-8 byte yields at most one unit for every
+    // three bytes, so a larger file is refused here before the JavaScript decoder spends time on it.
+    if (kind === "html" && Number(result.size || String(result.data || "").length * 3 / 4) > 3 * 256 * 1024) {
+      importing = false
+      importNote = "That file is too large for a signature"
+      importFailed = true
+      return
+    }
     var accountId = importingAccountId
     service.backend.call("message.signatureImport", { kind: kind,
-      data: kind === "html" ? Qt.atob(String(result.data || "")) : String(result.data || "")
+      data: kind === "html" ? Message.decodeBase64Url(String(result.data || "")) : String(result.data || "")
     }, function(imported, error) {
       root.importing = false
       if (error || !imported) {

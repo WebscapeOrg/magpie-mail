@@ -125,6 +125,25 @@ Item {
       compare(page.importFailed, true)
       compare(page.importNote, "That image cannot be safely displayed")
     }
+    function test_html_import_sends_decoded_utf8_text() {
+      page.importSignature()
+      fakeService.pickerCallback({ok: true, paths: ["/synthetic/signature.html"]})
+      fakeBackend.callback({ok: true, mimeType: "text/html", filename: "signature.html", size: 9,
+        data: "PHA+w6k8L3A+"}, null)
+      compare(fakeBackend.method, "message.signatureImport")
+      compare(fakeBackend.params.kind, "html")
+      compare(fakeBackend.params.data, "<p>\u00e9</p>")
+    }
+    function test_oversized_html_import_is_refused_before_decoding() {
+      page.importSignature()
+      fakeService.pickerCallback({ok: true, paths: ["/synthetic/signature.html"]})
+      fakeBackend.callback({ok: true, mimeType: "text/html", filename: "signature.html",
+        size: 3 * 256 * 1024 + 1, data: "PHA+w6k8L3A+"}, null)
+      compare(fakeBackend.method, "attachment.read")
+      compare(page.importing, false)
+      compare(page.importFailed, true)
+      compare(page.importNote, "That file is too large for a signature")
+    }
     function test_picker_completion_keeps_the_original_account() {
       page.importSignature()
       page.selectSignatureAccount("b@example.net")

@@ -1235,4 +1235,23 @@ assert.strictEqual(message.composeBody("\n\n", ""), "")
 assert.strictEqual(message.draftFields({ replyTo: { email: "team@example.com" }, to: [] }, "x").replyTo, "team@example.com")
 assert.strictEqual(message.draftFields({ replyTo: { email: "" }, to: [] }, "x").replyTo, "")
 
+// Invariant: production code decodes base64 in JavaScript; Qt has deprecated the string form of Qt.atob.
+{
+  const fs = require("fs")
+  const path = require("path")
+  const repository = path.join(__dirname, "..", "..")
+  const offenders = []
+  const visit = directory => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const full = path.join(directory, entry.name)
+      if (entry.isDirectory()) { if (entry.name !== "tests") visit(full); continue }
+      if (!/\.(qml|js)$/.test(entry.name)) continue
+      if (/\bQt\.atob\s*\(/.test(fs.readFileSync(full, "utf8"))) offenders.push(path.relative(repository, full))
+    }
+  }
+  visit(path.join(repository, "ui"))
+  visit(path.join(repository, "app", "qml"))
+  assert.deepStrictEqual(offenders, [], "Qt.atob is deprecated in Qt 6.12; decode with Message.decodeBase64Url")
+}
+
 console.log("test_message.js ok")

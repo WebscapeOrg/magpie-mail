@@ -85,15 +85,11 @@ function bytesToLatin1(bytes) {
   return out
 }
 
-// Invariant: Qt.atob returns decoded QString text; decoding it again as byte values corrupts non-ASCII text.
+// Invariant: Decodes base64 or base64url bytes as UTF-8 in JavaScript, not with Qt.atob, whose string form Qt has
+// deprecated; QML and the Node tests then share one decoder, and malformed bytes fall back as bytesToUtf8 says.
 function decodeBase64Url(text) {
   var input = String(text || "")
   if (input === "") return ""
-  if (typeof Qt !== "undefined" && typeof Qt.atob === "function") {
-    try {
-      return Qt.atob(input.replace(/-/g, "+").replace(/_/g, "/"))
-    } catch (parseError) {}
-  }
   return bytesToUtf8(base64ToBytes(input))
 }
 
