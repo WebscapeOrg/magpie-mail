@@ -11,8 +11,10 @@ Item {
 
 
 
-    function test_qt_atob_result_is_not_decoded_a_second_time() {
+    function test_base64_decodes_utf8_text_once() {
       compare(Message.decodeBase64Url("QWxleCDDoCBsJ8OpY29sZQ=="), "Alex à l'école")
+      compare(Message.decodeBase64Url("8J+Ygg"), "\ud83d\ude02")
+      compare(Message.decodeBase64Url("PHA-w6k8L3A-"), "<p>é</p>")
     }
 
     function test_encoded_display_text_cannot_route_a_reply() {
