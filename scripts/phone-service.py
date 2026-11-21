@@ -6,7 +6,6 @@ import importlib.util
 import json
 import os
 from pathlib import Path
-import re
 import stat
 import subprocess
 import tempfile
@@ -19,11 +18,8 @@ DATA = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share") / "
 UNIT = "magpie-mail-engine.service"
 CERTIFICATE = "magpie-mail-certificate.service"
 TIMER = "magpie-mail-certificate.timer"
-OTA = "magpie-mail-ota.service"
 # The units' names before Magpie became Magpie Mail (Dave, Q-017, 8 November 2026); rename-units retires them.
 OLD_UNITS = ["magpie-engine.service", "magpie-certificate.service", "magpie-certificate.timer"]
-OLD_OTA = "magpie-ota.service"
-DNS_NAME = re.compile(r"(?=.{1,253}\Z)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+\Z")
 
 
 def safe(path, directory=False):
@@ -92,40 +88,6 @@ def runtime():
     return result["executable"]
 
 
-def host():
-    # The main machine's name on Dave's tailnet stays out of this public repository (Dave, Q-006 in Medley, 10 November
-    # 2026), so it comes from Tailscale: the machine's own name, if Tailscale can issue it a certificate.
-    try:
-        status = json.loads(command(["tailscale", "status", "--json"]))
-        name = status["Self"]["DNSName"].rstrip(".")
-    except (ValueError, TypeError, KeyError, AttributeError):
-        raise RuntimeError("Tailscale did not report this machine's name") from None
-    if not DNS_NAME.match(name):
-        raise RuntimeError("Tailscale reported an unusable name for this machine")
-    domains = status.get("CertDomains")
-    if not isinstance(domains, list) or name not in domains:
-        raise RuntimeError("Tailscale cannot issue an HTTPS certificate for this machine; turn on HTTPS for the tailnet")
-    return name
-
-
-def certificate():
-    safe(PHONE, True)
-    if PHONE.stat().st_mode & 0o077:
-        raise RuntimeError("Phone storage must be private")
-    for path in [PHONE / "server.crt", PHONE / "server.key"]:
-        safe(path)
-        if path.exists() and (path.stat().st_uid != os.getuid() or path.stat().st_mode & 0o077):
-            raise RuntimeError("HTTPS credentials must be private")
-    name = host()
-    with tempfile.TemporaryDirectory(prefix=".certificate-", dir=PHONE) as stage:
-        cert, key = Path(stage) / "server.crt", Path(stage) / "server.key"
-        command(["tailscale", "cert", "--cert-file", str(cert), "--key-file", str(key), name])
-        changed = not (PHONE / "server.crt").exists() or (PHONE / "server.crt").read_bytes() != cert.read_bytes()
-        write(PHONE / "server.key", key.read_bytes())
-        write(PHONE / "server.crt", cert.read_bytes())
-    return changed
-
-
 def unit(name, text):
     path = CONFIG / "systemd/user" / name
     safe(path)
@@ -144,32 +106,41 @@ def service_environment():
     return environment
 
 
-def prepare_certificate_units(environment):
-    helper = DATA / "phone-service.py"
-    write(helper, Path(__file__).read_bytes(), 0o700)
-    unit(CERTIFICATE, "# Managed by Magpie\n[Unit]\nDescription=Renew Magpie Mail private HTTPS certificate\n\n[Service]\nType=oneshot\nExecStart=/usr/bin/python3 " + quote(str(helper)) + " certificate\n" + environment + "UMask=0077\n")
-    unit(TIMER, "# Managed by Magpie\n[Unit]\nDescription=Maintain Magpie Mail private HTTPS certificate\n\n[Timer]\nOnCalendar=weekly\nPersistent=true\nRandomizedDelaySec=1h\n\n[Install]\nWantedBy=timers.target\n")
-
-
-def install_certificate():
-    certificate()
-    prepare_certificate_units(service_environment())
-    command(["systemctl", "--user", "daemon-reload"])
-    command(["systemctl", "--user", "enable", "--now", TIMER])
+def retire_certificate():
+    """Stop renewing the HTTPS certificate. Its only reader was the iPhone's own installation page, which
+    magpie-mail-ios retired (C-026); the engine has no listener. Units without Magpie's marker stay."""
+    units = CONFIG / "systemd/user"
+    present = []
+    for name in [TIMER, CERTIFICATE] if units.is_dir() else []:
+        path = units / name
+        safe(path)
+        if path.exists():
+            if not path.read_bytes().startswith(b"# Managed by Magpie\n"):
+                raise RuntimeError("Refusing to retire an unrelated service: " + name)
+            present.append(name)
+    if TIMER in present:
+        command(["systemctl", "--user", "disable", "--now", TIMER])
+    for name in present:
+        (units / name).unlink()
+    if present:
+        command(["systemctl", "--user", "daemon-reload"])
+    for path in [PHONE / "server.key", PHONE / "server.crt", DATA / "phone-service.py"]:
+        if path.parent.is_dir():
+            safe(path)
+            path.unlink(missing_ok=True)
+    return bool(present)
 
 
 def prepare():
     binary = runtime()
-    certificate()
+    retire_certificate()
     environment = service_environment()
     unit(UNIT, "# Managed by Magpie\n[Unit]\nDescription=Magpie Mail engine\nAfter=network-online.target\n"
          + "ConditionPathExists=" + condition_path(STATE / "engine-enabled") + "\n"
          + "ConditionPathExists=!" + condition_path(STATE / "engine-uninstalling") + "\n\n[Service]\nType=simple\n"
          + "ExecStart=" + quote(binary) + " daemon\n" + environment
          + "UMask=0077\nNoNewPrivileges=true\nRuntimeDirectory=magpie-mail-engine\nRuntimeDirectoryMode=0700\nEnvironment=TMPDIR=%t/magpie-mail-engine\nKillMode=control-group\nRestart=on-failure\nRestartSec=5\nTimeoutStopSec=150\nTimeoutStartSec=30\n\n[Install]\nWantedBy=default.target\n")
-    prepare_certificate_units(environment)
-    records = {name: hashlib.sha256((CONFIG / "systemd/user" / name).read_bytes()).hexdigest()
-               for name in [UNIT, CERTIFICATE, TIMER]}
+    records = {UNIT: hashlib.sha256((CONFIG / "systemd/user" / UNIT).read_bytes()).hexdigest()}
     write(PHONE / "prepared.json", json.dumps(records).encode())
     command(["systemctl", "--user", "daemon-reload"])
 
@@ -206,22 +177,19 @@ def enable():
     prepared = PHONE / "prepared.json"
     safe(prepared)
     records = json.loads(prepared.read_bytes())
-    for name in [UNIT, CERTIFICATE, TIMER]:
-        path = CONFIG / "systemd/user" / name
-        safe(path)
-        content = path.read_bytes()
-        if records.get(name) != hashlib.sha256(content).hexdigest():
-            raise RuntimeError("Prepare the current mail service before enabling it")
-        if name.endswith((".service", ".timer")) and not content.startswith(b"# Managed by Magpie\n"):
-            raise RuntimeError("Refusing an unrelated service")
-    for path in [PHONE / "server.key", PHONE / "server.crt"]:
-        safe(path)
-        if path.stat().st_uid != os.getuid() or path.stat().st_mode & 0o077:
-            raise RuntimeError("HTTPS credentials must be private")
+    path = CONFIG / "systemd/user" / UNIT
+    safe(path)
+    content = path.read_bytes()
+    if records.get(UNIT) != hashlib.sha256(content).hexdigest():
+        raise RuntimeError("Prepare the current mail service before enabling it")
+    if not content.startswith(b"# Managed by Magpie\n"):
+        raise RuntimeError("Refusing an unrelated service")
+    if (CONFIG / "systemd/user" / TIMER).exists():
+        raise RuntimeError("Prepare the current mail service before enabling it")
     if legacy_frontend(binary):
         raise RuntimeError("Stop the existing Magpie frontend before enabling its shared mail service")
     write(marker, b"1\n")
-    command(["systemctl", "--user", "enable", "--now", UNIT, TIMER])
+    command(["systemctl", "--user", "enable", "--now", UNIT])
 
 
 def rename_units():
@@ -237,43 +205,33 @@ def rename_units():
                 raise RuntimeError("Refusing to retire an unrelated service: " + name)
             old.append(name)
     engine = (STATE / "engine-enabled").exists()
-    new_units_present = (units / TIMER).exists() and (not engine or (units / UNIT).exists())
-    if not old and new_units_present:
+    if not old and (not engine or (units / UNIT).exists()):
         return False
     if engine:
         prepare()
-    else:
-        install_certificate()
     to_disable = [name for name in old if not name.endswith("certificate.service")]
     if to_disable:
         command(["systemctl", "--user", "disable", "--now", *to_disable])
     for name in old:
         (units / name).unlink(missing_ok=True)
     command(["systemctl", "--user", "daemon-reload"])
-    command(["systemctl", "--user", "enable", "--now", *([UNIT] if engine else []), TIMER])
+    if engine:
+        command(["systemctl", "--user", "enable", "--now", UNIT])
     return True
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=["prepare", "enable", "certificate", "install-certificate", "rename-units"])
+    parser.add_argument("action", choices=["prepare", "enable", "rename-units", "retire-certificate"])
     args = parser.parse_args()
     if args.action == "prepare":
         prepare()
     elif args.action == "enable":
         enable()
-    elif args.action == "install-certificate":
-        install_certificate()
     elif args.action == "rename-units":
         print("Magpie Mail: units renamed" if rename_units() else "Magpie Mail: units already renamed")
-    elif certificate():
-        # Only the iPhone installation page serves the certificate; the mail engine has no listener.
-        # Until magpie-mail-ios's installer has renamed its unit, the page still runs under the old name.
-        for name in [OTA, OLD_OTA]:
-            if (CONFIG / "systemd/user" / name).is_file():
-                command(["systemctl", "--user", "try-restart", name])
-                break
-
+    else:
+        print("Magpie Mail: certificate renewal retired" if retire_certificate() else "Magpie Mail: no certificate renewal to retire")
 
 if __name__ == "__main__":
     main()

@@ -14,14 +14,6 @@ spec = importlib.util.spec_from_file_location('service', Path(__file__).resolve(
 service = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(service)
 RUNTIME = service.runtime
-CERTIFICATE = service.certificate
-NAME = 'service.example-tailnet.ts.net'
-LONG_LABEL = 'a'*64 + '.example-tailnet.ts.net'
-LONG_NAME = '.'.join(['a'*63]*3 + ['b'*62])
-
-
-def status(name=NAME + '.', domains=(NAME,)):
-    return json.dumps({'Self':{'DNSName':name},'CertDomains':list(domains) if domains is not None else None})
 
 
 class ServiceTests(unittest.TestCase):
@@ -38,10 +30,6 @@ class ServiceTests(unittest.TestCase):
             self.calls.append(args)
             return ''
         self.start(patch.object(service,'command',side_effect=command))
-        def certificate():
-            service.write(service.PHONE/'server.crt',b'synthetic certificate')
-            service.write(service.PHONE/'server.key',b'synthetic key')
-        self.start(patch.object(service,'certificate',side_effect=certificate))
 
     def start(self, replacement):
         self.addCleanup(replacement.stop)
@@ -62,7 +50,7 @@ class ServiceTests(unittest.TestCase):
         self.assertFalse((service.STATE/'engine-enabled').exists())
         self.assertIn('Unrelated',unit.read_text())
 
-    def test_legacy_frontend_and_unsafe_credentials_cannot_activate(self):
+    def test_a_running_legacy_frontend_cannot_activate(self):
         service.prepare()
         self.calls.clear()
         with patch.object(service,'legacy_frontend',return_value=True):
@@ -70,18 +58,6 @@ class ServiceTests(unittest.TestCase):
                 service.enable()
         self.assertEqual(self.calls,[])
         self.assertFalse((service.STATE/'engine-enabled').exists())
-        key = service.PHONE/'server.key'
-        key.chmod(0o644)
-        with self.assertRaises(RuntimeError):
-            service.enable()
-        self.assertFalse((service.STATE/'engine-enabled').exists())
-        key.chmod(0o600)
-        link = self.root/'linked-key'
-        os.link(key,link)
-        with self.assertRaises(RuntimeError):
-            service.enable()
-        self.assertEqual(link.read_bytes(),b'synthetic key')
-        self.assertEqual(self.calls,[])
 
     def test_prepared_service_retains_data_and_enables_only_owned_units(self):
         service.prepare()
@@ -90,20 +66,11 @@ class ServiceTests(unittest.TestCase):
         marker = service.STATE/'engine-enabled'
         self.assertEqual(marker.read_bytes(),b'1\n')
         self.assertEqual(marker.stat().st_mode & 0o777,0o600)
-        self.assertEqual(self.calls,[['systemctl','--user','enable','--now','magpie-mail-engine.service','magpie-mail-certificate.timer']])
+        self.assertEqual(self.calls,[['systemctl','--user','enable','--now','magpie-mail-engine.service']])
         unit = (service.CONFIG/'systemd/user'/service.UNIT).read_text()
         self.assertIn('KillMode=control-group',unit)
         self.assertIn('Environment=MAGPIE_WORKER_SERVICES=1',unit)
         self.assertFalse((service.PHONE/'server.json').exists(),'the engine no longer listens for phones')
-
-    def test_certificate_install_cannot_start_or_prepare_mail_engine(self):
-        with patch.object(service,'runtime',side_effect=AssertionError('No mail runtime during certificate setup')):
-            service.install_certificate()
-        self.assertFalse((service.STATE/'engine-enabled').exists())
-        self.assertFalse((service.PHONE/'server.json').exists())
-        self.assertFalse((service.CONFIG/'systemd/user'/service.UNIT).exists())
-        self.assertEqual(self.calls,[['systemctl','--user','daemon-reload'],['systemctl','--user','enable','--now','magpie-mail-certificate.timer']])
-        self.assertEqual((service.DATA/'phone-service.py').stat().st_mode & 0o777,0o700)
 
     def test_rename_units_moves_an_enabled_engine_to_the_new_names(self):
         units = service.CONFIG/'systemd/user'
@@ -113,12 +80,12 @@ class ServiceTests(unittest.TestCase):
         service.write(service.STATE/'engine-enabled',b'1\n')
         self.assertTrue(service.rename_units())
         self.assertEqual([name for name in service.OLD_UNITS if (units/name).exists()],[])
-        for name in [service.UNIT,service.CERTIFICATE,service.TIMER]:
-            self.assertTrue((units/name).read_text().startswith('# Managed by Magpie\n'),name)
+        self.assertTrue((units/service.UNIT).read_text().startswith('# Managed by Magpie\n'))
+        self.assertFalse((units/service.TIMER).exists())
         self.assertIn('RuntimeDirectory=magpie-mail-engine',(units/service.UNIT).read_text())
         self.assertEqual(self.calls[-3:],[['systemctl','--user','disable','--now','magpie-engine.service','magpie-certificate.timer'],
                                           ['systemctl','--user','daemon-reload'],
-                                          ['systemctl','--user','enable','--now','magpie-mail-engine.service','magpie-mail-certificate.timer']])
+                                          ['systemctl','--user','enable','--now','magpie-mail-engine.service']])
         self.calls.clear()
         self.assertFalse(service.rename_units(),'running it again changes nothing')
         self.assertEqual(self.calls,[])
@@ -132,18 +99,15 @@ class ServiceTests(unittest.TestCase):
         self.assertTrue(service.rename_units())
         self.assertFalse((units/'magpie-certificate.service').exists())
         self.assertTrue((units/service.UNIT).exists())
-        self.assertTrue((units/service.TIMER).exists())
         # Disable was not called with empty arguments; daemon-reload and enable were called
         self.assertEqual(self.calls,[['systemctl','--user','daemon-reload'],
                                      ['systemctl','--user','daemon-reload'],
-                                     ['systemctl','--user','enable','--now','magpie-mail-engine.service','magpie-mail-certificate.timer']])
-        # Case 2: all old units removed, new units removed, rename_units prepares and enables again
-        for name in [service.UNIT, service.CERTIFICATE, service.TIMER]:
-            (units/name).unlink()
+                                     ['systemctl','--user','enable','--now','magpie-mail-engine.service']])
+        # Case 2: all old units removed, new unit removed, rename_units prepares and enables again
+        (units/service.UNIT).unlink()
         self.calls.clear()
         self.assertTrue(service.rename_units())
         self.assertTrue((units/service.UNIT).exists())
-        self.assertTrue((units/service.TIMER).exists())
         self.calls.clear()
         self.assertFalse(service.rename_units())
 
@@ -154,26 +118,15 @@ class ServiceTests(unittest.TestCase):
         with patch.object(service,'runtime',side_effect=AssertionError('no engine to prepare')):
             self.assertTrue(service.rename_units())
         self.assertFalse((units/service.UNIT).exists())
-        self.assertEqual(self.calls[-1],['systemctl','--user','enable','--now','magpie-mail-certificate.timer'])
+        self.assertFalse((units/'magpie-certificate.timer').exists())
+        self.assertFalse((units/service.TIMER).exists(),'no certificate renewal is set up again')
+        self.assertEqual(self.calls,[['systemctl','--user','disable','--now','magpie-certificate.timer'],['systemctl','--user','daemon-reload']])
         (units/'magpie-engine.service').write_text('# Someone else\n[Service]\n')
         self.calls.clear()
         with self.assertRaises(RuntimeError):
             service.rename_units()
         self.assertEqual(self.calls,[])
         self.assertTrue((units/'magpie-engine.service').exists())
-
-    def test_certificate_renewal_restarts_only_the_installation_page(self):
-        units = service.CONFIG/'systemd/user'
-        units.mkdir(parents=True)
-        for name in [service.UNIT,'magpie-mail-ota.service']:
-            (units/name).write_text('[Service]\n')
-        with patch.object(service,'certificate',return_value=True), patch('sys.argv',['phone-service.py','certificate']):
-            service.main()
-        self.assertEqual(self.calls,[['systemctl','--user','try-restart','magpie-mail-ota.service']])
-        self.calls.clear()
-        with patch.object(service,'certificate',return_value=False), patch('sys.argv',['phone-service.py','certificate']):
-            service.main()
-        self.assertEqual(self.calls,[],'an unchanged certificate restarts nothing')
 
     def test_runtime_refuses_builds_that_still_serve_phones(self):
         executable = str(service.DATA/'bin/omamail')
@@ -246,14 +199,6 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(pending.read_bytes(),b'1\n')
         self.assertEqual(self.calls,[])
 
-    def test_certificate_install_preserves_unrelated_timer(self):
-        timer=service.CONFIG/'systemd/user/magpie-mail-certificate.timer'
-        service.write(timer,b'# another owner\n')
-        with self.assertRaises(RuntimeError): service.install_certificate()
-        self.assertEqual(timer.read_bytes(),b'# another owner\n')
-        self.assertEqual(self.calls,[])
-        self.assertFalse((service.STATE/'engine-enabled').exists())
-
     def test_service_path_cannot_retain_or_execute_session_tools(self):
         tool = self.root / 'magpie-test-session-tool'
         touched = self.root / 'session-tool-ran'
@@ -264,80 +209,70 @@ class ServiceTests(unittest.TestCase):
         touched.unlink()
         with patch.dict(os.environ, PATH=str(self.root) + ':/old/mise/installs/claude/1.0'):
             service.prepare()
-        paths = []
-        for name in [service.UNIT, 'magpie-mail-certificate.service']:
-            text = (service.CONFIG/'systemd/user'/name).read_text()
-            value = next(line.removeprefix('Environment=') for line in text.splitlines()
-                         if line.startswith('Environment="PATH='))
-            path = shlex.split(value)[0].removeprefix('PATH=')
-            paths.append(path)
-            self.assertEqual(path.split(os.pathsep), [str(Path.home()/'.local/share/mise/shims'),
-                             str(Path.home()/'.local/bin'), '/usr/local/bin', '/usr/bin'])
-            result = subprocess.run(['/bin/sh', '-c', 'exec magpie-test-session-tool'],
-                                    env={'PATH': path}, capture_output=True, timeout=5)
-            self.assertEqual(result.returncode, 127)
-            self.assertFalse(touched.exists())
-        self.assertEqual(paths[0], paths[1])
+        text = (service.CONFIG/'systemd/user'/service.UNIT).read_text()
+        value = next(line.removeprefix('Environment=') for line in text.splitlines()
+                     if line.startswith('Environment="PATH='))
+        path = shlex.split(value)[0].removeprefix('PATH=')
+        self.assertEqual(path.split(os.pathsep), [str(Path.home()/'.local/share/mise/shims'),
+                         str(Path.home()/'.local/bin'), '/usr/local/bin', '/usr/bin'])
+        result = subprocess.run(['/bin/sh', '-c', 'exec magpie-test-session-tool'],
+                                env={'PATH': path}, capture_output=True, timeout=5)
+        self.assertEqual(result.returncode, 127)
+        self.assertFalse(touched.exists())
         before = (service.CONFIG/'systemd/user'/service.UNIT).read_bytes()
         with patch.dict(os.environ, PATH='/another/session:/new/mise/installs/claude/2.0'):
             service.prepare()
         self.assertEqual((service.CONFIG/'systemd/user'/service.UNIT).read_bytes(), before)
 
-    def answer(self, reply):
-        def command(args):
-            self.calls.append(args)
-            if args[:2] == ['tailscale','cert']:
-                Path(args[3]).write_bytes(b'synthetic certificate')
-                Path(args[5]).write_bytes(b'synthetic key')
-                return ''
-            return reply
-        return patch.object(service,'command',side_effect=command)
 
-    def test_the_certificate_is_issued_for_the_name_tailscale_reports(self):
-        with self.answer(status()):
-            self.assertEqual(service.host(),NAME)
-            self.assertEqual(self.calls,[['tailscale','status','--json']])
-            self.calls.clear()
-            self.assertTrue(CERTIFICATE())
-        self.assertEqual(self.calls[0],['tailscale','status','--json'])
-        self.assertEqual(self.calls[1][:2],['tailscale','cert'])
-        self.assertEqual(self.calls[1][-1],NAME)
-        self.assertEqual(len(self.calls),2)
-        self.assertEqual((service.PHONE/'server.crt').read_bytes(),b'synthetic certificate')
-        self.assertEqual((service.PHONE/'server.key').stat().st_mode & 0o777,0o600)
+    def certificate_renewal(self, marker='# Managed by Magpie\n'):
+        units = service.CONFIG/'systemd/user'
+        units.mkdir(parents=True, exist_ok=True)
+        for name in [service.TIMER, service.CERTIFICATE]:
+            (units/name).write_text(marker + '[Unit]\n')
+        for path in [service.PHONE/'server.crt', service.PHONE/'server.key', service.DATA/'phone-service.py']:
+            service.write(path, b'synthetic')
+        return units
 
-    def test_names_at_the_dns_limits_are_accepted(self):
-        for name in ['a'*63 + '.example-tailnet.ts.net', '.'.join(['a'*63]*3 + ['b'*61])]:
-            with self.subTest(len(name)), self.answer(status(name + '.',[name])):
-                self.assertEqual(service.host(),name)
+    def test_prepare_retires_the_certificate_renewal_once(self):
+        units = self.certificate_renewal()
+        (service.PHONE/'server.json').parent.mkdir(exist_ok=True)
+        service.write(service.PHONE/'devices.json', b'kept')
+        service.prepare()
+        for path in [units/service.TIMER, units/service.CERTIFICATE, service.PHONE/'server.crt', service.PHONE/'server.key', service.DATA/'phone-service.py']:
+            self.assertFalse(path.exists(), path)
+        self.assertEqual((service.PHONE/'devices.json').read_bytes(), b'kept', 'only the certificate files go')
+        self.assertEqual(self.calls,[['systemctl','--user','disable','--now','magpie-mail-certificate.timer'],
+                                     ['systemctl','--user','daemon-reload'],['systemctl','--user','daemon-reload']])
+        self.assertEqual(list(json.loads((service.PHONE/'prepared.json').read_text())), [service.UNIT])
+        self.calls.clear()
+        self.assertFalse(service.retire_certificate(), 'a second run changes nothing')
+        self.assertEqual(self.calls, [])
 
-    def test_an_unusable_tailscale_answer_issues_no_certificate(self):
-        answers = {
-            'not JSON': 'tailscale is stopped',
-            'a list': '[]',
-            'no Self': json.dumps({'CertDomains':[NAME]}),
-            'a number for the name': json.dumps({'Self':{'DNSName':7},'CertDomains':[NAME]}),
-            'an option for a name': status('-x.example-tailnet.ts.net.',['-x.example-tailnet.ts.net']),
-            'a name with a space': status(NAME + ' --x.',[NAME + ' --x']),
-            'a name with a newline': status(NAME + '\n.',[NAME + '\n']),
-            'a bare word': status('service.',['service']),
-            'capitals': status('Service.example-tailnet.ts.net.',['Service.example-tailnet.ts.net']),
-            'no certificate names': status(domains=()),
-            'certificates off': status(domains=None),
-            'another machine\'s certificate': status(domains=('other.example-tailnet.ts.net',)),
-            'names as one string': json.dumps({'Self':{'DNSName':NAME + '.'},'CertDomains':'x ' + NAME}),
-            'a space inside a label': status('ent erprise.example-tailnet.ts.net.',['ent erprise.example-tailnet.ts.net']),
-            'no certificate names listed': json.dumps({'Self':{'DNSName':NAME + '.'}}),
-            'a label over 63 characters': status(LONG_LABEL + '.',[LONG_LABEL]),
-            'a name over 253 characters': status(LONG_NAME + '.',[LONG_NAME]),
-        }
-        for case, reply in answers.items():
-            with self.subTest(case), self.answer(reply):
-                self.calls.clear()
-                with self.assertRaises(RuntimeError):
-                    CERTIFICATE()
-                self.assertEqual(self.calls,[['tailscale','status','--json']])
-                self.assertFalse((service.PHONE/'server.crt').exists())
+    def test_retirement_refuses_an_unrelated_timer_and_changes_nothing(self):
+        units = self.certificate_renewal('# another owner\n')
+        with self.assertRaises(RuntimeError):
+            service.retire_certificate()
+        self.assertEqual(self.calls, [])
+        self.assertEqual((units/service.TIMER).read_text(), '# another owner\n[Unit]\n')
+        self.assertTrue((service.PHONE/'server.key').exists())
+
+    def test_an_engine_cannot_be_enabled_beside_a_leftover_renewal_timer(self):
+        service.prepare()
+        units = service.CONFIG/'systemd/user'
+        (units/service.TIMER).write_text('# Managed by Magpie\n[Timer]\n')
+        self.calls.clear()
+        with self.assertRaises(RuntimeError):
+            service.enable()
+        self.assertEqual(self.calls, [])
+        self.assertFalse((service.STATE/'engine-enabled').exists())
+
+    def test_retire_certificate_command_reports_what_it_did(self):
+        self.certificate_renewal()
+        for expected in ['certificate renewal retired', 'no certificate renewal to retire']:
+            with patch('sys.argv',['phone-service.py','retire-certificate']), patch('builtins.print') as shown:
+                service.main()
+            self.assertIn(expected, shown.call_args.args[0])
 
 
 if __name__ == '__main__':
