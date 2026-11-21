@@ -243,6 +243,7 @@ class ServiceTests(unittest.TestCase):
             self.assertFalse(path.exists(), path)
         self.assertEqual((service.PHONE/'devices.json').read_bytes(), b'kept', 'only the certificate files go')
         self.assertEqual(self.calls,[['systemctl','--user','disable','--now','magpie-mail-certificate.timer'],
+                                     ['systemctl','--user','stop','magpie-mail-certificate.service'],
                                      ['systemctl','--user','daemon-reload'],['systemctl','--user','daemon-reload']])
         self.assertEqual(list(json.loads((service.PHONE/'prepared.json').read_text())), [service.UNIT])
         self.calls.clear()
@@ -256,6 +257,27 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(self.calls, [])
         self.assertEqual((units/service.TIMER).read_text(), '# another owner\n[Unit]\n')
         self.assertTrue((service.PHONE/'server.key').exists())
+
+    def test_retirement_refuses_an_unrelated_service_beside_magpies_timer(self):
+        units = self.certificate_renewal()
+        (units/service.CERTIFICATE).write_text('# another owner\n')
+        with self.assertRaisesRegex(RuntimeError, 'unrelated service'):
+            service.retire_certificate()
+        self.assertEqual(self.calls, [])
+        self.assertTrue((units/service.TIMER).exists())
+
+    def test_an_unsafe_file_stops_retirement_before_anything_is_removed(self):
+        units = self.certificate_renewal()
+        helper = service.DATA/'phone-service.py'
+        helper.unlink()
+        (self.root/'elsewhere').write_text('kept')
+        helper.symlink_to(self.root/'elsewhere')
+        with self.assertRaisesRegex(RuntimeError, 'phone-service.py'):
+            service.retire_certificate()
+        self.assertEqual(self.calls, [])
+        for path in [units/service.TIMER, units/service.CERTIFICATE, service.PHONE/'server.key', service.PHONE/'server.crt']:
+            self.assertTrue(path.exists(), path)
+        self.assertEqual((self.root/'elsewhere').read_text(), 'kept')
 
     def test_an_engine_cannot_be_enabled_beside_a_leftover_renewal_timer(self):
         service.prepare()

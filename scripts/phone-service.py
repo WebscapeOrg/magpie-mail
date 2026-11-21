@@ -118,16 +118,22 @@ def retire_certificate():
             if not path.read_bytes().startswith(b"# Managed by Magpie\n"):
                 raise RuntimeError("Refusing to retire an unrelated service: " + name)
             present.append(name)
+    files = [path for path in [PHONE / "server.key", PHONE / "server.crt", DATA / "phone-service.py"] if path.parent.is_dir()]
+    for path in files:
+        try:
+            safe(path)
+        except RuntimeError:
+            raise RuntimeError("Refusing to remove an unsafe file: " + str(path)) from None
     if TIMER in present:
         command(["systemctl", "--user", "disable", "--now", TIMER])
+    if CERTIFICATE in present:
+        command(["systemctl", "--user", "stop", CERTIFICATE])
     for name in present:
         (units / name).unlink()
     if present:
         command(["systemctl", "--user", "daemon-reload"])
-    for path in [PHONE / "server.key", PHONE / "server.crt", DATA / "phone-service.py"]:
-        if path.parent.is_dir():
-            safe(path)
-            path.unlink(missing_ok=True)
+    for path in files:
+        path.unlink(missing_ok=True)
     return bool(present)
 
 
